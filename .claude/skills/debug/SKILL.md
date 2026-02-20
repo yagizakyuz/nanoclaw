@@ -10,7 +10,7 @@ This guide covers debugging the containerized agent execution system.
 ## Architecture Overview
 
 ```
-Host (macOS)                          Container (Linux VM)
+Host (macOS/Linux)                    Container (Docker)
 ─────────────────────────────────────────────────────────────
 src/container-runner.ts               container/agent-runner/
     │                                      │

@@ -6,12 +6,13 @@ import makeWASocket, {
   Browsers,
   DisconnectReason,
   WASocket,
+  downloadMediaMessage,
   fetchLatestWaWebVersion,
   makeCacheableSignalKeyStore,
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 
-import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, STORE_DIR } from '../config.js';
+import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, GROUPS_DIR, STORE_DIR } from '../config.js';
 import {
   getLastGroupSync,
   setLastGroupSync,
@@ -172,18 +173,63 @@ export class WhatsAppChannel implements Channel {
         // Only deliver full message for registered groups
         const groups = this.opts.registeredGroups();
         if (groups[chatJid]) {
-          const content =
+          let content =
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             msg.message?.imageMessage?.caption ||
             msg.message?.videoMessage?.caption ||
             '';
 
+          // Download image and save to group's media folder
+          if (msg.message?.imageMessage) {
+            const group = groups[chatJid];
+            try {
+              const buffer = await downloadMediaMessage(msg, 'buffer', {}) as Buffer;
+              const mediaDir = path.join(GROUPS_DIR, group.folder, 'media');
+              fs.mkdirSync(mediaDir, { recursive: true });
+              const ts = timestamp.replace(/[:.]/g, '-');
+              const filename = `img-${ts}-${msg.key.id || 'unknown'}.jpg`;
+              const filePath = path.join(mediaDir, filename);
+              fs.writeFileSync(filePath, buffer);
+              // Append image reference so the agent can Read it (Claude is multimodal)
+              // Appended (not prepended) so trigger word at start of caption still matches
+              const containerPath = `/workspace/group/media/${filename}`;
+              content = `${content}\n[Image: ${containerPath}]`.trim();
+              logger.debug({ chatJid, filename }, 'Saved WhatsApp image');
+            } catch (err) {
+              logger.warn({ chatJid, err }, 'Failed to download WhatsApp image');
+              content = `${content}\n[Image: failed to download]`.trim();
+            }
+          }
+
           // Skip protocol messages with no text content (encryption keys, read receipts, etc.)
           if (!content) continue;
 
           const sender = msg.key.participant || msg.key.remoteJid || '';
           const senderName = msg.pushName || sender.split('@')[0];
+
+          // Check if bot was @mentioned using WhatsApp's native mention picker.
+          // contextInfo.mentionedJid contains explicitly mentioned JIDs —
+          // NOT quoted/replied-to message senders (those go in contextInfo.participant).
+          // WhatsApp may use either phone JID or LID, so check both.
+          // Mentions can appear in extendedText, image captions, or video captions.
+          const mentionedJids =
+            msg.message?.extendedTextMessage?.contextInfo?.mentionedJid ||
+            msg.message?.imageMessage?.contextInfo?.mentionedJid ||
+            msg.message?.videoMessage?.contextInfo?.mentionedJid ||
+            [];
+          const botPhone = this.sock.user?.id?.split(':')[0]?.split('@')[0];
+          const botLid = this.sock.user?.lid?.split(':')[0]?.split('@')[0];
+          const isBotMentioned = mentionedJids.some((jid) => {
+            const jidUser = jid.split(':')[0].split('@')[0];
+            return (botPhone && jidUser === botPhone) || (botLid && jidUser === botLid);
+          });
+
+          // If bot was natively mentioned but content doesn't already have the
+          // trigger prefix, prepend it so the existing trigger pattern matches.
+          if (isBotMentioned && !content.trimStart().startsWith(`@${ASSISTANT_NAME}`)) {
+            content = `@${ASSISTANT_NAME} ${content}`.trim();
+          }
 
           const fromMe = msg.key.fromMe || false;
           // Detect bot messages: with own number, fromMe is reliable

@@ -10,9 +10,12 @@ export function escapeXml(s: string): string {
 }
 
 export function formatMessages(messages: NewMessage[]): string {
-  const lines = messages.map((m) =>
-    `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}">${escapeXml(m.content)}</message>`,
-  );
+  const lines = messages.map((m) => {
+    // If message contains an image reference, add a hint for the agent
+    const hasImage = m.content.includes('[Image: /workspace/');
+    const imageAttr = hasImage ? ' has_image="true"' : '';
+    return `<message sender="${escapeXml(m.sender_name)}" time="${m.timestamp}"${imageAttr}>${escapeXml(m.content)}</message>`;
+  });
   return `<messages>\n${lines.join('\n')}\n</messages>`;
 }
 
